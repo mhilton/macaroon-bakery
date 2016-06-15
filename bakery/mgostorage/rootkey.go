@@ -11,7 +11,7 @@ import (
 	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
 
-	"gopkg.in/macaroon-bakery.v1/bakery"
+	"gopkg.in/macaroon-bakery.v2-unstable/bakery"
 )
 
 // Functions defined as variables so they can be overidden
@@ -146,7 +146,7 @@ func (s *RootKeys) EnsureIndex(c *mgo.Collection) error {
 // bakery.ErrNotFound.
 //
 // Called with s.mu locked.
-func (s *RootKeys) get(id string, fallback func(id string) (rootKey, error)) (rootKey, error) {
+func (s *RootKeys) get(id []byte, fallback func(id string) (rootKey, error)) (rootKey, error) {
 	key, cached, err := s.get0(id, fallback)
 	if err != nil && err != bakery.ErrNotFound {
 		return rootKey{}, errgo.Mask(err)
@@ -164,7 +164,7 @@ func (s *RootKeys) get(id string, fallback func(id string) (rootKey, error)) (ro
 // get0 is the inner version of RootKeys.get. It returns an item and reports
 // whether it was found in the cache, but doesn't check whether the
 // item has expired or move the returned item to s.cache.
-func (s *RootKeys) get0(id string, fallback func(id string) (rootKey, error)) (key rootKey, inCache bool, err error) {
+func (s *RootKeys) get0(id []byte, fallback func(id string) (rootKey, error)) (key rootKey, inCache bool, err error) {
 	if k, ok := s.cache[id]; ok {
 		if !k.isValid() {
 			return rootKey{}, true, bakery.ErrNotFound
@@ -215,11 +215,11 @@ type rootKeyStorage struct {
 }
 
 // Get implements bakery.RootKeyStorage.Get.
-func (s *rootKeyStorage) Get(id string) ([]byte, error) {
+func (s *rootKeyStorage) Get(id []byte) ([]byte, error) {
 	s.keys.mu.Lock()
 	defer s.keys.mu.Unlock()
 
-	key, err := s.keys.get(id, s.getFromMongo)
+	key, err := s.keys.get(string(id), s.getFromMongo)
 	if err != nil {
 		return nil, err
 	}
