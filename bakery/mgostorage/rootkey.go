@@ -48,6 +48,13 @@ type RootKeys struct {
 }
 
 type rootKey struct {
+	Id      []byte `bson:"_id"`
+	Created time.Time
+	Expires time.Time
+	RootKey []byte
+}
+
+type oldRootKey struct {
 	Id      string `bson:"_id"`
 	Created time.Time
 	Expires time.Time
@@ -146,7 +153,7 @@ func (s *RootKeys) EnsureIndex(c *mgo.Collection) error {
 // bakery.ErrNotFound.
 //
 // Called with s.mu locked.
-func (s *RootKeys) get(id []byte, fallback func(id string) (rootKey, error)) (rootKey, error) {
+func (s *RootKeys) get(id []byte, fallback func(id []byte) (rootKey, error)) (rootKey, error) {
 	key, cached, err := s.get0(id, fallback)
 	if err != nil && err != bakery.ErrNotFound {
 		return rootKey{}, errgo.Mask(err)
@@ -164,14 +171,14 @@ func (s *RootKeys) get(id []byte, fallback func(id string) (rootKey, error)) (ro
 // get0 is the inner version of RootKeys.get. It returns an item and reports
 // whether it was found in the cache, but doesn't check whether the
 // item has expired or move the returned item to s.cache.
-func (s *RootKeys) get0(id []byte, fallback func(id string) (rootKey, error)) (key rootKey, inCache bool, err error) {
-	if k, ok := s.cache[id]; ok {
+func (s *RootKeys) get0(id []byte, fallback func(id []byte) (rootKey, error)) (key rootKey, inCache bool, err error) {
+	if k, ok := s.cache[string(id)]; ok {
 		if !k.isValid() {
 			return rootKey{}, true, bakery.ErrNotFound
 		}
 		return k, true, nil
 	}
-	if k, ok := s.oldCache[id]; ok {
+	if k, ok := s.oldCache[string(id)]; ok {
 		if !k.isValid() {
 			return rootKey{}, false, bakery.ErrNotFound
 		}
@@ -184,12 +191,12 @@ func (s *RootKeys) get0(id []byte, fallback func(id string) (rootKey, error)) (k
 
 // addCache adds the given key to the cache.
 // Called with s.mu locked.
-func (s *RootKeys) addCache(id string, k rootKey) {
+func (s *RootKeys) addCache(id []byte, k rootKey) {
 	if len(s.cache) >= s.maxCacheSize {
 		s.oldCache = s.cache
 		s.cache = make(map[string]rootKey)
 	}
-	s.cache[id] = k
+	s.cache[string(id)] = k
 }
 
 // setCurrent sets the current key for the given storage policy.
@@ -219,14 +226,26 @@ func (s *rootKeyStorage) Get(id []byte) ([]byte, error) {
 	s.keys.mu.Lock()
 	defer s.keys.mu.Unlock()
 
-	key, err := s.keys.get(string(id), s.getFromMongo)
+	key, err := s.keys.get(id, s.getFromMongo)
 	if err != nil {
 		return nil, err
 	}
 	return key.RootKey, nil
 }
 
-func (s *rootKeyStorage) getFromMongo(id string) (rootKey, error) {
+func (s *rootKeyStorage) getFromMongo(id []byte) (rootKey, error) {
+	var key rootKey
+	err := mgoCollectionFindId(s.coll, id).One(&key)
+	if err != nil {
+		if err == mgo.ErrNotFound {
+			return s.getLegacyFromMongo(string(id))
+		}
+		return rootKey{}, errgo.Notef(err, "cannot get key from database")
+	}
+	return key, nil
+}
+
+func (s *rootKeyStorage) getLegacyFromMongo(id string) (rootKey, error) {
 	var key rootKey
 	err := mgoCollectionFindId(s.coll, id).One(&key)
 	if err != nil {
@@ -241,7 +260,7 @@ func (s *rootKeyStorage) getFromMongo(id string) (rootKey, error) {
 // RootKey implements bakery.RootKeyStorage.RootKey by
 // returning an existing key from the cache when compatible
 // with the current policy.
-func (s *rootKeyStorage) RootKey() ([]byte, string, error) {
+func (s *rootKeyStorage) RootKey() ([]byte, []byte, error) {
 	if key := s.rootKeyFromCache(); key.isValid() {
 		return key.RootKey, key.Id, nil
 	}
@@ -264,18 +283,18 @@ func (s *rootKeyStorage) RootKey() ([]byte, string, error) {
 		},
 	}}).Sort("-created").One(&key)
 	if err != nil && err != mgo.ErrNotFound {
-		return nil, "", errgo.Notef(err, "cannot query existing keys")
+		return nil, nil, errgo.Notef(err, "cannot query existing keys")
 	}
 	if !key.isValid() {
 		// No keys found anywhere, so let's create one.
 		var err error
 		key, err = s.generateKey()
 		if err != nil {
-			return nil, "", errgo.Notef(err, "cannot generate key")
+			return nil, nil, errgo.Notef(err, "cannot generate key")
 		}
 		logger.Infof("new root key id %q", key.Id)
 		if err := s.coll.Insert(key); err != nil {
-			return nil, "", errgo.Notef(err, "cannot create root key")
+			return nil, nil, errgo.Notef(err, "cannot create root key")
 		}
 	}
 	s.keys.mu.Lock()
@@ -323,7 +342,7 @@ func (s *rootKeyStorage) generateKey() (rootKey, error) {
 	return rootKey{
 		Created: now,
 		Expires: now.Add(s.policy.ExpiryDuration + s.policy.GenerateInterval),
-		Id:      fmt.Sprintf("%x", newId),
+		Id:      newId,
 		RootKey: newKey,
 	}, nil
 }

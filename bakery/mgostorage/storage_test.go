@@ -108,7 +108,7 @@ func (s *StorageSuite) TestCreateMacaroon(c *gc.C) {
 	c.Assert(service, gc.NotNil)
 
 	m, err := service.NewMacaroon(
-		"123",
+		[]byte("123"),
 		[]byte("abc"),
 		[]checkers.Caveat{checkers.Caveat{Location: "", Condition: "is-authorised bob"}},
 	)

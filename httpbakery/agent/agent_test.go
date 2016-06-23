@@ -97,7 +97,7 @@ func (s *agentSuite) TestAgentLogin(c *gc.C) {
 		c.Assert(err, gc.IsNil)
 		err = agent.SetUpAuth(client, u, "test-user")
 		c.Assert(err, gc.IsNil)
-		m, err := s.bakery.NewMacaroon("", nil, []checkers.Caveat{{
+		m, err := s.bakery.NewMacaroon(nil, nil, []checkers.Caveat{{
 			Location:  s.discharger.URL,
 			Condition: "test condition",
 		}})
@@ -126,7 +126,7 @@ func (s *agentSuite) TestSetUpAuthError(c *gc.C) {
 func (s *agentSuite) TestNoCookieError(c *gc.C) {
 	client := httpbakery.NewClient()
 	client.VisitWebPage = agent.VisitWebPage(client)
-	m, err := s.bakery.NewMacaroon("", nil, []checkers.Caveat{{
+	m, err := s.bakery.NewMacaroon(nil, nil, []checkers.Caveat{{
 		Location:  s.discharger.URL,
 		Condition: "test condition",
 	}})

@@ -39,7 +39,7 @@ func (s *suite) TestDischargerSimple(c *gc.C) {
 		Locator:  d,
 	})
 	c.Assert(err, gc.IsNil)
-	m, err := svc.NewMacaroon("", nil, []checkers.Caveat{{
+	m, err := svc.NewMacaroon(nil, nil, []checkers.Caveat{{
 		Location:  d.Location(),
 		Condition: "something",
 	}})
@@ -83,7 +83,7 @@ func (s *suite) TestDischargerTwoLevels(c *gc.C) {
 		Locator:  locator,
 	})
 	c.Assert(err, gc.IsNil)
-	m, err := svc.NewMacaroon("", nil, []checkers.Caveat{{
+	m, err := svc.NewMacaroon(nil, nil, []checkers.Caveat{{
 		Location:  d2.Location(),
 		Condition: "true",
 	}})
@@ -156,7 +156,7 @@ func (s *suite) TestInteractiveDischarger(c *gc.C) {
 		Locator:  d,
 	})
 	c.Assert(err, gc.IsNil)
-	m, err := svc.NewMacaroon("", nil, []checkers.Caveat{{
+	m, err := svc.NewMacaroon(nil, nil, []checkers.Caveat{{
 		Location:  d.Location(),
 		Condition: "something",
 	}})
@@ -191,7 +191,7 @@ func (s *suite) TestLoginDischargerError(c *gc.C) {
 		Locator:  d,
 	})
 	c.Assert(err, gc.IsNil)
-	m, err := svc.NewMacaroon("", nil, []checkers.Caveat{{
+	m, err := svc.NewMacaroon(nil, nil, []checkers.Caveat{{
 		Location:  d.Location(),
 		Condition: "something",
 	}})
@@ -224,7 +224,7 @@ func (s *suite) TestInteractiveDischargerURL(c *gc.C) {
 		Locator:  d,
 	})
 	c.Assert(err, gc.IsNil)
-	m, err := svc.NewMacaroon("", nil, []checkers.Caveat{{
+	m, err := svc.NewMacaroon(nil, nil, []checkers.Caveat{{
 		Location:  d.Location(),
 		Condition: "something",
 	}})
