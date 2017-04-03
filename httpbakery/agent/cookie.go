@@ -18,12 +18,33 @@ type agentLogin struct {
 	PublicKey *bakery.PublicKey `json:"public_key"`
 }
 
-// setCookie sets an agent-login cookie with the specified parameters on
-// the given request.
-func setCookie(req *http.Request, username string, key *bakery.PublicKey) {
+// cookieJar implements an http.CookieJar. It wraps an http.CookieJar
+// with a jar that will add an "agent-login" cookie to the returned
+// cookies if a suitable agent is found.
+type cookieJar struct {
+	http.CookieJar
+	agent *Agent
+}
+
+// Cookies implements http.CookieJar.Cookies by calling the wrapped
+// cookie jar then looking the services configured in the agent and
+// adding an agent-login cookie for the service that best matches the
+// given URL, if any.
+func (j cookieJar) Cookies(u *url.URL) []*http.Cookie {
+	cookies := j.CookieJar.Cookies(u)
+	var bestMatch *service
+	for _, service := range j.agent.services {
+		if service.url.Host == u.Host && pathMatch(u.Path, service.url.Path) && (bestMatch == nil || len(service.url.Path) > len(bestmatch.url.Path)) {
+			service := service
+			bestMatch = &service
+		}
+	}
+	if bestMatch == nil {
+		return cookies
+	}
 	al := agentLogin{
-		Username:  username,
-		PublicKey: key,
+		Username:  bestMatch.username,
+		PublicKey: &j.agent.key.Public,
 	}
 	data, err := json.Marshal(al)
 	if err != nil {
@@ -32,10 +53,28 @@ func setCookie(req *http.Request, username string, key *bakery.PublicKey) {
 		// isn't.
 		panic(errgo.Notef(err, "cannot marshal %s cookie", cookieName))
 	}
-	req.AddCookie(&http.Cookie{
+	return append(cookies, &http.Cookie{
 		Name:  cookieName,
 		Value: base64.StdEncoding.EncodeToString(data),
 	})
+}
+
+// pathMatch checks whether reqPath matches the given registered path.
+func pathMatch(reqPath, path string) bool {
+	if path == reqPath {
+		return true
+	}
+	if !strings.HasPrefix(reqPath, path) {
+		return false
+	}
+	// /foo/bar matches /foo/bar/baz.
+	// /foo/bar/ also matches /foo/bar/baz.
+	// /foo/bar does not match /foo/barfly.
+	// So trim off the suffix and check that the equivalent place in
+	// reqPath holds a slash. Note that we know that reqPath must be
+	// longer than path because path is a prefix of reqPath but not
+	// equal to it.
+	return reqPath[len(path)] == '/'
 }
 
 // ErrNoAgentLoginCookie is the error returned when the expected

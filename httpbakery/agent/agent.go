@@ -24,184 +24,64 @@ import (
 
 var logger = loggo.GetLogger("httpbakery.agent")
 
-/*
-PROTOCOL
-
-An agent login works as follows:
-
-	    Agent                            Login Service
-	      |                                    |
-	      | GET visitURL with agent cookie     |
-	      |----------------------------------->|
-	      |                                    |
-	      |    Macaroon with local third-party |
-	      |                             caveat |
-	      |<-----------------------------------|
-	      |                                    |
-	      | GET visitURL with agent cookie &   |
-	      | discharged macaroon                |
-	      |----------------------------------->|
-	      |                                    |
-	      |               Agent login response |
-	      |<-----------------------------------|
-	      |                                    |
-
-The agent cookie is a cookie named "agent-login" holding a base64
-encoded JSON object described by the agentLogin struct.
-
-A local third-party caveat is a third party caveat with the location
-set to "local" and the caveat encrypted with the public key declared
-in the agent cookie. The httpbakery.Client automatically discharges
-the local third-party caveat.
-
-On success the response is a JSON object described by agentResponse
-with the AgentLogin field set to true.
-
-If an error occurs then the response should be a JSON object that
-unmarshals to an httpbakery.Error.
-*/
-
-// SetUpAuth is a convenience function that makes a new Visitor
-// and adds an agent for the given URL using the given username
-// and the public key of the client.Key.
-func SetUpAuth(client *httpbakery.Client, siteURL string, agentUsername string) error {
-	if client.Key == nil {
-		return errgo.Newf("no key found in client")
+// SetUpAuth configures the given httpbakery.Client to use the given
+// agent for authentication where the agent supports the login service.
+func SetUpAuth(client *httpbakery.Client, a *Agent) {
+	if client.Key != nil {
+		panic("cannot configure agent authentication, already configured")
 	}
-	var v Visitor
-	if err := v.AddAgent(Agent{
-		URL:      siteURL,
-		Username: agentUsername,
-		Key:      client.Key,
-	}); err != nil {
-		return errgo.Mask(err)
+	client.Key = a.Key
+	client.InteractionMethods = append(client.InteractionMethods, interactor{a})
+	client.Client.CookieJar = cookieJar{
+		CookieJar: client.Client.CookieJar,
+		agents:    a,
 	}
-	
-	client.WebPageVisitor = &v
-	return nil
 }
 
-// agentResponse contains the response to an agent login attempt.
-type agentResponse struct {
-	AgentLogin bool `json:"agent_login"`
-}
-
-// agent is the internal version of the agent type which also
-// includes the parsed URL.
-type agent struct {
-	url *url.URL
-	Agent
-}
-
-// Agent represents an agent that can be used for agent authentication.
+// Agent contains details of a login agent. An agent associates a
+// public/private keypair with the associated username for any number of
+// login services. The agent may be serialised using YAML or JSON.
 type Agent struct {
-	// URL holds the URL associated with the agent.
-	URL string `json:"url" yaml:"url"`
-	// Username holds the username to use for the agent.
-	Username string `json:"username" yaml:"username"`
-	// Key holds the agent's private key pair.
-	Key *bakery.KeyPair `json:"key,omitempty" yaml:"key,omitempty"`
+	key      *bakery.KeyPair
+	services map[string][]service
 }
 
-// interactionParms holds the information expected in
-// the agent interaction entry in an interaction-required
-// error.
-type interactionParams struct {
-
-there are a couple of possibilities here. We could use the existing
-visit/wait approach, and put the visit URL in here.
-
-a slightly more direct/efficient alternative would be
-to to include the discharge macaroon directly in
-the interactionParams struct:
-
-	// Macaroon holds the discharge macaroon
-	// with with a self-addressed
-	// third party caveat that can be discharged to
-	// discharge the original third party caveat.
-	Macaroon *bakery.Macaroon
-
-this approach has the advantage that the original
-third party caveat will be discharged in only one
-round trip.
-
-The macaroon would be included only when the original
-request mentions the agent user name and public key
-(meaning that they would need to be set as cookies
-when the interactor is added to the agent)
-} 
-
-// Interactor is a httpbakery.Interactor that performs interaction using the
-// agent login protocol. A Visitor may be encoded as JSON or YAML
-// so that agent information can be stored persistently.
-type Interactor struct {
-	defaultKey *bakery.KeyPair
-	agents     map[string][]agent
+// service holds the information about which username to use with which
+// login service.
+type service struct {
+	// url holds the URL associated with the agent.
+	url *url.URL
+	// rawURL holds the original unparsed URL specified in the agent.
+	rawURL string
+	// username holds the username to use for the agent.
+	username string
 }
 
-func (i *Interactor) Kind() string {
-	return "agent"
-}
-
-func (i *Interactor) Interact(ctx context.Context, client *Client, location string, interactionRequiredErr *Error) (*bakery.Macaroon, error) {
-}
-
-func (i *Interactor) LegacyInteract(ctx context.Context, client *Client, visitURL *url.URL) error {
-}
-
-// Agents returns all the agents registered with the visitor
-// ordered by URL.
-func (v *Visitor) Agents() []Agent {
-	var agents []Agent
-	for _, as := range v.agents {
-		for _, a := range as {
-			agents = append(agents, a.Agent)
-		}
+// New creates a new Agent that uses the given key.
+func New(key *bakery.Key) *Agent {
+	return &Agent{
+		key: key,
 	}
-	sort.Stable(agentsByURL(agents))
-	return agents
 }
 
-// SetDefaultKey sets the key that will be associated with
-// added agents that don't have an associated key.
-func (v *Visitor) SetDefaultKey(key *bakery.KeyPair) {
-	v.defaultKey = key
-}
-
-// DefaultKey returns the default key, which may be nil
-// if not set.
-func (v *Visitor) DefaultKey() *bakery.KeyPair {
-	return v.defaultKey
-}
-
-// AddAgent adds an agent to the visitor. The agent information will be
-// used when sending discharge requests to all URLs under the given URL.
-// If more than one agent matches a target URL then the agent with the
-// most specific matching URL will be used. Longer paths are counted as
-// more specific than shorter paths.
+// SetUsername configures the agent username to use with the given login URL. The
+// configured username will be used when sending discharge
+// requests to all URLs under the given URL. If more than one username
+// matches a target URL then the username with the most specific matching
+// URL will be used. Longer paths are counted as more specific than
+// shorter paths.
 //
 // Unlike HTTP cookies, a trailing slash is not significant, so for
 // example, if an agent is registered with the URL
 // http://example.com/foo, its information will be sent to
 // http://example.com/foo/bar but not http://kremvax.com/other.
 //
-// If an agent is added with the same URL and user name as an existing agent (ignoring
-// any trailing slash), the existing agent will be replaced.
+// If a username is added with the same URL as an existing
+// username (ignoring any trailing slash), the existing username will be
+// replaced.
 //
-// if there are two agents for the same URL with different usernames,
-// the last one added will be used, but all the agent information will still
-// be retained.
-//
-// AddAgent returns an error if the agent's URL cannot be parsed
-// or if the agent does not have a key and no default key has
-// been set.
-func (v *Visitor) AddAgent(a Agent) error {
-	if a.Key == nil {
-		if v.defaultKey == nil {
-			return errgo.Newf("no key for agent")
-		}
-		a.Key = v.defaultKey
-	}
+// SetUsername returns an error if the given URL cannot be parsed.
+func (a *Agent) SetUsername(url, username string) error {
 	u, err := url.Parse(a.URL)
 	if err != nil {
 		return errgo.Notef(err, "bad agent URL")
@@ -209,86 +89,32 @@ func (v *Visitor) AddAgent(a Agent) error {
 	// The path should behave the same whether it has a trailing
 	// slash or not.
 	u.Path = strings.TrimSuffix(u.Path, "/")
-	if v.agents == nil {
-		v.agents = make(map[string][]agent)
+	if a.agents == nil {
+		a.agents = make(map[string][]agent)
 	}
-	v.agents[u.Host] = insertAgent(v.agents[u.Host], agent{
-		Agent: a,
-		url:   u,
+	a.services[u.Host] = insertService(a.services[u.Host], service{
+		url:      u,
+		rawURL:   url,
+		username: username,
 	})
 	return nil
 }
 
-// pathMatch checks whether reqPath matches the given registered path.
-func pathMatch(reqPath, path string) bool {
-	if path == reqPath {
-		return true
-	}
-	if !strings.HasPrefix(reqPath, path) {
-		return false
-	}
-	// /foo/bar matches /foo/bar/baz.
-	// /foo/bar/ also matches /foo/bar/baz.
-	// /foo/bar does not match /foo/barfly.
-	// So trim off the suffix and check that the equivalent place in
-	// reqPath holds a slash. Note that we know that reqPath must be
-	// longer than path because path is a prefix of reqPath but not
-	// equal to it.
-	return reqPath[len(path)] == '/'
-}
-
-func (v *Visitor) findAgent(u *url.URL) (agent, bool) {
-	for _, a := range v.agents[u.Host] {
-		if pathMatch(u.Path, a.url.Path) {
-			return a, true
+func insertService(services []service, s service) []service {
+	for i, s1 := range services {
+		if s1.url.Path == s.url.Path {
+			services[i] = s
+			return services
 		}
 	}
-	return agent{}, false
+	services = append(services, service{})
+	copy(services[1:], services)
+	services[0] = s
+	sort.Stable(byReverseURLLength(services))
+	return services
 }
 
-// VisitWebPage implements httpbakery.Visitor.VisitWebPage by using the
-// appropriate agent for the URL.
-func (v *Visitor) VisitWebPage(ctx context.Context, client *httpbakery.Client, m map[string]*url.URL) error {
-	url := m[httpbakery.UserInteractionMethod]
-	a, ok := v.findAgent(url)
-	if !ok {
-		return errgo.New("no suitable agent found")
-	}
-	client1 := *client
-	client1.Key = a.Key
-	c := &httprequest.Client{
-		Doer: &client1,
-	}
-	req, err := http.NewRequest("GET", url.String(), nil)
-	if err != nil {
-		return errgo.Mask(err)
-	}
-	setCookie(req, a.Username, &a.Key.Public)
-	var resp agentResponse
-	if err := c.Do(ctx, req, &resp); err != nil {
-		return errgo.Mask(err)
-	}
-	if !resp.AgentLogin {
-		return errors.New("agent login failed")
-	}
-	return nil
-}
-
-func insertAgent(agents []agent, a agent) []agent {
-	for i, a1 := range agents {
-		if a1.url.Path == a.url.Path && a.Username == a1.Username {
-			agents[i] = a
-			return agents
-		}
-	}
-	agents = append(agents, agent{})
-	copy(agents[1:], agents)
-	agents[0] = a
-	sort.Stable(byReverseURLLength(agents))
-	return agents
-}
-
-type byReverseURLLength []agent
+type byReverseURLLength []service
 
 func (as byReverseURLLength) Less(i, j int) bool {
 	p0, p1 := as[i].url.Path, as[j].url.Path
@@ -306,16 +132,56 @@ func (as byReverseURLLength) Len() int {
 	return len(as)
 }
 
-type agentsByURL []Agent
-
-func (as agentsByURL) Less(i, j int) bool {
-	return as[i].URL < as[j].URL
+// interactionParms holds the information expected in
+// the agent interaction entry in an interaction-required
+// error.
+type interactionParams struct {
+	// Macaroon holds the discharge macaroon
+	// with with a self-addressed
+	// third party caveat that can be discharged to
+	// discharge the original third party caveat.
+	Macaroon *bakery.Macaroon `json:"macaroon"`
 }
 
-func (as agentsByURL) Swap(i, j int) {
-	as[i], as[j] = as[j], as[i]
+// interactor is a httpbakery.Interactor that performs interaction using the
+// agent login protocols.
+type interactor struct {
+	agents *Agents
 }
 
-func (as agentsByURL) Len() int {
-	return len(as)
+func (i Interactor) Kind() string {
+	return "agent"
+}
+
+// Interact implements the v2 protocol for agent login.
+func (i interactor) Interact(_ context.Context, _ *Client, _ string, interactionRequiredErr *Error) (*bakery.Macaroon, error) {
+	data, ok := interactionRequiredErr.Info.InteractionMethods["agent"]
+	if !ok {
+		return nil, nil
+	}
+	var params interactionParams
+	if err := json.Unmarshal([]byte(data), &params); err != nil {
+		return nil, errgo.Notef(err, "cannot unmarshal agent parameters")
+	}
+	return params.Macaroon, nil
+}
+
+// agentResponse contains the response to an agent login attempt.
+type agentResponse struct {
+	AgentLogin bool `json:"agent_login"`
+}
+
+// LegacyInteract implements the v1 protocol for agent login.
+func (i interactor) LegacyInteract(ctx context.Context, client *httpbakery.Client, visitURL *url.URL) error {
+	c := &httprequest.Client{
+		Doer: client,
+	}
+	var resp agentResponse
+	if err := c.Get(ctx, visitURL, &resp); err != nil {
+		return errgo.Mask(err)
+	}
+	if !resp.AgentLogin {
+		return errors.New("agent login failed")
+	}
+	return nil
 }
